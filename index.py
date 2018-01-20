@@ -6,35 +6,23 @@ import time
 import threading
 import requests
 import random
+from datetime import datetime
 from tqdm import tqdm
 from peewee import *
-from Models.User import User
-
-
+from Models.handlers import *
+from Models.User import *
+from Models.repository import *
 vk=vk_api.VkApi(token=config.vktoken)
 bot=telebot.TeleBot(config.tlgtoken)
 
-
-COOLDOWN=5
 PATTERN=r'^t.me\/[a-zA-Z0-9]*'
-VALUES = {'out': 0,'count': 100,'time_offset': COOLDOWN}
+CD=5
 
 def write_vk_ms(user_id, s):
     vk.method('messages.send', {'user_id':user_id,'message':s})
 
-def find_user_by_vk(uid):
-    try:
-        return User.select().distinct().where(User.vkid==uid).get()
-    except:
-        return None
-    
-def find_user_by_tg(tname):
-    try:
-        return User.select().distinct().where(User.tname==tname).get()
-    except:
-        return None
 
-def try_auth_user(uid,*urls):
+def try_auth_user(uid,*urls): #later
     for url in urls:
             this_user,err=auth_user(uid,url)
             if (this_user):
@@ -83,21 +71,26 @@ def command_start(m):
         check=User(tname=m.chat.username.lower(),chatid=cid)
         check.save()
         
-
-def telegrambot():
-    bot.polling(none_stop=True)
-
+operations ={
+    'photo': lambda att,user: handle_photo(att,user,b=bot),
+    'audio': lambda att,user: handle_audio(att,user,b=bot),
+    'video': lambda att,user: handle_video(att,user,b=bot),
+    'doc': lambda att,user: handle_doc(att,user,b=bot),
+    'link': lambda att,user: handle_link(att,user,b=bot),
+}
 
 def main():
-    threading.Thread(target=telegrambot,daemon=True).start()
+    cooldown=CD
+    threading.Thread(target=lambda:bot.polling(none_stop=True),daemon=True).start()
     while True:
-        msgs= vk.method('messages.get', VALUES)
+        msgs = vk.method('messages.get', {'out': 0,'count': 100,'time_offset': cooldown})
+        starttime = time.time()
         for item in msgs['items']:
             #Для каждого сообщения
             vk_id=item['user_id']
             msg_body=item['body']
             
-            this_user,err = auth_user(vkid,msg_body)
+            this_user,err = auth_user(vk_id,msg_body)
             if (not this_user):
                 write_vk_ms(vk_id,err)
                 continue
@@ -106,43 +99,30 @@ def main():
             if(msg_body):
                 bot.send_message(this_user.chatid,msg_body)
                 print('sended')
+            
             #TODO reposts, forwarded messages
             if ( 'attachments' in item):
                 for att in item['attachments']:
-                    print(att['type'])
-
-                    if(att['type']=='photo'):
-                        attphoto=att['photo']
-                        max=int(0)
-                        for ph in attphoto:
-                            if(re.fullmatch(r'^photo_[0-9]*',ph)):
-                                if(int(ph[6:])>max):
-                                    max=int(ph[6:])
-                        print(max)
-                        bot.send_photo(this_user.chatid,attphoto['photo_'+str(max)])
-
-                    elif(att['type']=='audio'):
-                        if (att['audio']['url']):
-                            bot.send_audio(this_user.chatid,att['audio']['url'])
-                            write_vk_ms(vk_id,'отправлено')
-                        else:
-                            print('нету url')
-
-                    elif(att['type']=='video'):
-                        print('video')
-
-                    elif(att['type']=='doc'):
-                        print('doc')
+                    type = att['type']
+                    response = operations[type](att[type],this_user)
+                    if (response):
+                        print('gotcha, send 1 attachment')
+                    else:
+                        print('something went wrong')
                         
-                    elif(att['type']=='link'):
-                        print('link')
-                        bot.send_message(this_user.chatid,att['link']['url'])
             if ('geo' in item):
                 coor=item['geo']['coordinates'].split(' ')
                 bot.send_location(this_user.chatid,coor[0],coor[1])
         #end items
-        print('sleeeeep ',COOLDOWN,' sec')
-        time.sleep(COOLDOWN)
+
+        endtime=time.time()-starttime
+        if(endtime < cooldown):
+            if (cooldown != CD):
+                cooldown=CD
+            print('sleeeeep ',cooldown,' sec')
+            time.sleep(cooldown)
+        else:
+            cooldown=int(endtime)
     #end while
 #end main
     
